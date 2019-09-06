@@ -35,6 +35,7 @@
 #include "am65-cpsw-nuss.h"
 #include "davinci_mdio_int.h"
 #include "am65-cpts.h"
+#include "am65-cpsw-qos.h"
 
 #define AM65_CPSW_SS_BASE	0x0
 #define AM65_CPSW_SGMII_BASE	0x100
@@ -72,6 +73,7 @@
 #define AM65_CPSW_PORTN_REG_TS_VLAN_LTYPE_REG	0x318
 #define AM65_CPSW_PORTN_REG_TS_CTL_LTYPE2       0x31C
 
+/* AM65_CPSW_REG_CTL register fields */
 #define AM65_CPSW_CTL_VLAN_AWARE		BIT(1)
 #define AM65_CPSW_CTL_P0_ENABLE			BIT(2)
 #define AM65_CPSW_CTL_P0_TX_CRC_REMOVE		BIT(13)
@@ -620,6 +622,7 @@ static int am65_cpsw_nuss_ndo_slave_open(struct net_device *ndev)
 
 	common->usage_count++;
 
+	am65_cpsw_qos_init(ndev);
 	/* Max length register */
 	writel(AM65_CPSW_MAX_PACKET_SIZE,
 	       port->port_base + AM65_CPSW_PORT_REG_RX_MAXLEN);
@@ -1468,6 +1471,7 @@ static const struct net_device_ops am65_cpsw_nuss_netdev_ops_2g = {
 	.ndo_vlan_rx_kill_vid	= am65_cpsw_nuss_ndo_slave_kill_vid,
 	.ndo_do_ioctl		= am65_cpsw_nuss_ndo_slave_ioctl,
 	.ndo_set_features	= am65_cpsw_nuss_ndo_slave_set_features,
+	.ndo_setup_tc           = am65_cpsw_qos_ndo_setup_tc,
 };
 
 static void am65_cpsw_nuss_slave_disable_unused(struct am65_cpsw_port *port)

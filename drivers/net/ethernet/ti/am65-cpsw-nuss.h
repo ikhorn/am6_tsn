@@ -50,6 +50,7 @@ struct am65_cpsw_port {
 	struct am65_cpsw_slave_data	slave;
 	bool				tx_ts_enabled;
 	bool				rx_ts_enabled;
+	bool				est_enabled;
 };
 
 struct am65_cpsw_tx_chn {
@@ -108,6 +109,7 @@ struct am65_cpsw_common {
 
 	bool			pf_p0_rx_ptype_rrobin;
 	u32			cur_txq;
+	bool			est_enabled;
 };
 
 struct am65_cpsw_ndev_stats {
