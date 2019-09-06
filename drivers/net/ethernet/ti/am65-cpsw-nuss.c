@@ -72,6 +72,7 @@
 #define AM65_CPSW_PORTN_REG_TS_VLAN_LTYPE_REG	0x318
 #define AM65_CPSW_PORTN_REG_TS_CTL_LTYPE2       0x31C
 
+/* AM65_CPSW_REG_CTL register fields */
 #define AM65_CPSW_CTL_VLAN_AWARE		BIT(1)
 #define AM65_CPSW_CTL_P0_ENABLE			BIT(2)
 #define AM65_CPSW_CTL_P0_TX_CRC_REMOVE		BIT(13)
@@ -186,6 +187,7 @@ void am65_cpsw_nuss_adjust_link(struct net_device *ndev)
 		cpsw_ale_control_set(common->ale, port->port_id,
 				     ALE_PORT_STATE, ALE_PORT_STATE_FORWARD);
 
+		am65_cpsw_qbv_adj_link(ndev);
 		netif_tx_wake_all_queues(ndev);
 		netif_carrier_on(ndev);
 	} else {
@@ -1455,6 +1457,17 @@ static int am65_cpsw_nuss_ndo_slave_set_features(struct net_device *ndev,
 	return 0;
 }
 
+int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
+			       void *type_data)
+{
+	switch (type) {
+	case TC_SETUP_QDISC_TAPRIO:
+		return am65_cpsw_set_taprio(ndev, type_data);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct net_device_ops am65_cpsw_nuss_netdev_ops_2g = {
 	.ndo_open		= am65_cpsw_nuss_ndo_slave_open,
 	.ndo_stop		= am65_cpsw_nuss_ndo_slave_stop,
@@ -1468,6 +1481,7 @@ static const struct net_device_ops am65_cpsw_nuss_netdev_ops_2g = {
 	.ndo_vlan_rx_kill_vid	= am65_cpsw_nuss_ndo_slave_kill_vid,
 	.ndo_do_ioctl		= am65_cpsw_nuss_ndo_slave_ioctl,
 	.ndo_set_features	= am65_cpsw_nuss_ndo_slave_set_features,
+	.ndo_setup_tc           = am65_cpsw_qos_ndo_setup_tc,
 };
 
 static void am65_cpsw_nuss_slave_disable_unused(struct am65_cpsw_port *port)

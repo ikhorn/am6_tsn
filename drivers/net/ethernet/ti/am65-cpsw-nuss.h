@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
+#include "am65-cpsw-qos.h"
 
 #define AM65_CPSW_DEBUG	(NETIF_MSG_HW		| NETIF_MSG_WOL		| \
 			 NETIF_MSG_DRV		| NETIF_MSG_LINK	| \
@@ -50,6 +51,7 @@ struct am65_cpsw_port {
 	struct am65_cpsw_slave_data	slave;
 	bool				tx_ts_enabled;
 	bool				rx_ts_enabled;
+	struct am65_cpsw_qbv		qbv;
 };
 
 struct am65_cpsw_tx_chn {
