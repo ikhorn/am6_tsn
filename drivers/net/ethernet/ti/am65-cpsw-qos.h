@@ -31,6 +31,6 @@ int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 void am65_cpsw_qos_link_up(struct net_device *ndev, int link_speed);
 void am65_cpsw_qos_link_down(struct net_device *ndev);
 
-int am65_cpsw_iet_set(struct net_device *ndev, u32 mask);
+int am65_cpsw_iet_set(struct net_device *ndev, int link_speed, u32 mask);
 
 #endif /* AM65_CPSW_QOS_H_ */

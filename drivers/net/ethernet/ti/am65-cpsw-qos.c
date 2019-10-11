@@ -16,6 +16,9 @@
 #define AM65_CPSW_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_MAX_BLKS		0x008
+#define AM65_CPSW_PN_REG_IET_CTRL		0x040
+#define AM65_CPSW_PN_REG_IET_STATUS		0x044
+#define AM65_CPSW_PN_REG_IET_VERIFY		0x049
 #define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
 #define AM65_CPSW_PN_REG_EST_CTL		0x060
 #define AM65_CPSW_PN_REG_MAC_TX_GAP		0x3A4
@@ -42,6 +45,22 @@
 #define AM65_CPSW_PN_EST_FILL_EN		BIT(8)
 #define AM65_CPSW_PN_EST_FILL_MARGIN_MSK	GENMASK(25, 16)
 #define AM65_CPSW_PN_EST_FILL_MARGIN_OFFSET	16
+
+/* AM65_CPSW_PN_REG_IET_CTRL register fields */
+#define AM65_CPSW_PN_IET_PENABLE		BIT(0)
+#define AM65_CPSW_PN_IET_VERIFY_DBL		BIT(2)
+#define AM65_CPSW_PN_IET_LINK_FAIL		BIT(3)
+#define AM65_CPSW_PN_IET_PREMPT_MASK		GENMASK(23, 16)
+#define AM65_CPSW_PN_IET_PREMPT_OFFSET		16
+
+/* AM65_CPSW_PN_REG_IET_STATUS register fields */
+#define AM65_CPSW_PN_MAC_VERIFIED		BIT(0)
+#define AM65_CPSW_PN_MAC_VERIFY_FAIL		BIT(1)
+#define AM65_CPSW_PN_MAC_RESPOND_ERR		BIT(2)
+#define AM65_CPSW_PN_MAC_VERIFY_ERR		BIT(3)
+
+/* AM65_CPSW_PN_REG_IET_VERIFY register fields */
+#define AM65_CPSW_IET_VERIFY_1000		0x001312D0
 
 /* AM65_CPSW_PN_REG_FIFO_STATUS register fields */
 #define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_MSK	GENMASK(7, 0)
@@ -102,10 +121,16 @@ static void am65_cpsw_iet_enable(struct am65_cpsw_common *common)
 	common->iet_enabled = common_enable;
 }
 
-static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, u32 mask)
+static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port,
+				      int link_speed, u32 mask)
 {
 	u32 max_blks_val;
 	u32 val;
+
+	/* set verify count depending on link speed */
+	val = DIV_ROUND_UP(SPEED_1000, link_speed);
+	val = val * AM65_CPSW_IET_VERIFY_1000;
+	writel(val, port->port_base + AM65_CPSW_PN_REG_IET_VERIFY);
 
 	val = readl(port->port_base + AM65_CPSW_PN_REG_CTL);
 	if (mask) {
@@ -121,10 +146,53 @@ static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, u32 mask)
 	port->qos.iet_mask = mask;
 }
 
-int am65_cpsw_iet_set(struct net_device *ndev, u32 mask)
+static int am65_cpsw_iet_verify(struct net_device *ndev, int link_speed)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int try;
+	u32 val;
+
+	/* supposes link fail bit cleaned before
+	 * 10 ms - 1Gb
+	 */
+	try = DIV_ROUND_UP(SPEED_1000, link_speed) + 1;
+	while (try--) {
+		val = readl(port->port_base + AM65_CPSW_PN_REG_IET_STATUS);
+		if (val & AM65_CPSW_PN_MAC_VERIFIED)
+			break;
+
+		if (val & AM65_CPSW_PN_MAC_VERIFY_FAIL) {
+			dev_err(&ndev->dev, "IET MAC verify failed");
+			return -1;
+		}
+
+		if (val & AM65_CPSW_PN_MAC_RESPOND_ERR) {
+			dev_err(&ndev->dev, "IET MAC respond error");
+			return -1;
+		}
+
+		if (val & AM65_CPSW_PN_MAC_VERIFY_ERR) {
+			dev_err(&ndev->dev, "IET MAC verify error");
+			return -1;
+		}
+
+		msleep(10);
+	}
+
+	if (try < 0) {
+		dev_err(&ndev->dev, "IET MAC verify timeout");
+		return -1;
+	}
+
+	return 0;
+}
+
+int am65_cpsw_iet_set(struct net_device *ndev, int link_speed, u32 mask)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpsw_common *common = port->common;
+	int ret, verify;
+	u32 val;
 
 	if (mask && am65_cpsw_port_est_enabled(port)) {
 		netdev_err(ndev,
@@ -137,10 +205,30 @@ int am65_cpsw_iet_set(struct net_device *ndev, u32 mask)
 	 * qeues and flush & suspend them? Not cool but skip for now.
 	 */
 
-	am65_cpsw_port_iet_enable(port, mask);
+	am65_cpsw_port_iet_enable(port, link_speed, mask);
+
+	/* verify only if not verified, that is after IET off */
+	val = readl(port->port_base + AM65_CPSW_PN_REG_IET_STATUS);
+	verify = mask && !(val & AM65_CPSW_PN_MAC_VERIFIED);
+
+	/* clean link fail bit to enable verification */
+	if (verify)
+		writel(AM65_CPSW_PN_IET_PENABLE,
+		       port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+
 	am65_cpsw_iet_enable(common);
 
+	if (verify) {
+		ret = am65_cpsw_iet_verify(ndev, link_speed);
+		if (ret)
+			goto err;
+	}
+
 	return 0;
+err:
+	am65_cpsw_port_iet_enable(port, link_speed, 0);
+	am65_cpsw_iet_enable(common);
+	return ret;
 }
 
 #if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)

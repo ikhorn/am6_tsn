@@ -506,11 +506,13 @@ static int am65_cpsw_set_link_ksettings(
 	if (!salve->phy || phy_is_pseudo_fixed_link(salve->phy))
 		return -EOPNOTSUPP;
 
-	ret = am65_cpsw_iet_set(ndev, ecmd->base.preemption);
+	ret = phy_ethtool_ksettings_set(salve->phy, ecmd);
 	if (ret)
 		return ret;
 
-	return phy_ethtool_ksettings_set(salve->phy, ecmd);
+	ret = am65_cpsw_iet_set(ndev, ecmd->base.speed, ecmd->base.preemption);
+
+	return ret;
 }
 
 static int am65_cpsw_get_eee(struct net_device *ndev, struct ethtool_eee *edata)
