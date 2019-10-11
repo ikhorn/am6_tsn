@@ -485,9 +485,12 @@ static int am65_cpsw_get_link_ksettings(struct net_device *ndev,
 					struct ethtool_link_ksettings *ecmd)
 {
 	struct am65_cpsw_slave_data *salve = am65_ndev_to_slave(ndev);
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 
 	if (!salve->phy)
 		return -EOPNOTSUPP;
+
+	ecmd->base.preemption = port->qos.iet_mask;
 
 	phy_ethtool_ksettings_get(salve->phy, ecmd);
 	return 0;
@@ -498,9 +501,14 @@ static int am65_cpsw_set_link_ksettings(
 		const struct ethtool_link_ksettings *ecmd)
 {
 	struct am65_cpsw_slave_data *salve = am65_ndev_to_slave(ndev);
+	int ret;
 
 	if (!salve->phy || phy_is_pseudo_fixed_link(salve->phy))
 		return -EOPNOTSUPP;
+
+	ret = am65_cpsw_iet_set(ndev, ecmd->base.preemption);
+	if (ret)
+		return ret;
 
 	return phy_ethtool_ksettings_set(salve->phy, ecmd);
 }
@@ -744,7 +752,7 @@ static int am65_cpsw_set_ethtool_priv_flags(struct net_device *ndev, u32 flags)
 
 	rrobin = !!(flags & AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN);
 
-	if (common->est_enabled && rrobin) {
+	if ((common->est_enabled || common->iet_enabled) && rrobin) {
 		netdev_err(ndev,
 			   "p0-rx-ptype-rrobin flag conflicts with QOS\n");
 		return -EINVAL;

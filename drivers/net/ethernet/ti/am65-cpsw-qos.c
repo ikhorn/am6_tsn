@@ -4,6 +4,7 @@
  *
  * quality of service module includes:
  * Enhanced Scheduler Traffic (EST - P802.1Qbv/D2.2)
+ * Intersperced Express Traffic (IET – P802.3br/D2.0)
  */
 
 #include "am65-cpsw-qos.h"
@@ -19,9 +20,11 @@
 #define AM65_CPSW_PN_REG_MAC_TX_GAP		0x3A4
 
 /* AM65_CPSW_REG_CTL register fields */
+#define AM65_CPSW_CTL_IET_EN			BIT(17)
 #define AM65_CPSW_CTL_EST_EN			BIT(18)
 
 /* AM65_CPSW_PN_REG_CTL register fields */
+#define AM65_CPSW_PN_CTL_IET_PORT_EN		BIT(16)
 #define AM65_CPSW_PN_CTL_EST_PORT_EN		BIT(17)
 
 /* AM65_CPSW_PN_REG_EST_CTL register fields */
@@ -67,12 +70,72 @@ enum timer_act {
 	TACT_SKIP_PROG,		/* just buffer can be updated */
 };
 
-#if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
-
 static int am65_cpsw_port_est_enabled(struct am65_cpsw_port *port)
 {
 	return port->qos.est_oper || port->qos.est_admin;
 }
+
+/* IET */
+
+static void am65_cpsw_iet_enable(struct am65_cpsw_common *common)
+{
+	int common_enable = 0;
+	u32 val;
+	int i;
+
+	for (i = 0; i < common->port_num; i++)
+		common_enable |= !!common->ports[i].qos.iet_mask;
+
+	val = readl(common->cpsw_base + AM65_CPSW_REG_CTL);
+
+	if (common_enable)
+		val |= AM65_CPSW_CTL_IET_EN;
+	else
+		val &= ~AM65_CPSW_CTL_IET_EN;
+
+	writel(val, common->cpsw_base + AM65_CPSW_REG_CTL);
+	common->iet_enabled = common_enable;
+}
+
+static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, u32 mask)
+{
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_CTL);
+	if (mask)
+		val |= AM65_CPSW_PN_CTL_IET_PORT_EN;
+	else
+		val &= ~AM65_CPSW_PN_CTL_IET_PORT_EN;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
+	port->qos.iet_mask = mask;
+}
+
+int am65_cpsw_iet_set(struct net_device *ndev, u32 mask)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
+
+	if (mask && am65_cpsw_port_est_enabled(port)) {
+		netdev_err(ndev,
+			   "Frame preemption has to be enabled before EST");
+		return -EINVAL;
+	}
+
+	/* TODO: xmit shouldn't send packet to premt queue till the moment
+	 * preemption is configured, so stop sending packets to appropriate
+	 * qeues and flush & suspend them? Not cool but skip for now.
+	 */
+
+	am65_cpsw_port_iet_enable(port, mask);
+	am65_cpsw_iet_enable(common);
+
+	return 0;
+}
+
+#if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
+
+/* EST */
 
 static void am65_cpsw_est_enable(struct am65_cpsw_common *common, int enable)
 {
