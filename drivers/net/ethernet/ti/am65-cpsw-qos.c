@@ -36,6 +36,7 @@
 #define AM65_CPSW_REG_CTL			0x004
 #define AM65_CPSW_REG_EST_TS_DOMAIN		0x054
 #define AM65_CPSW_PN_REG_CTL			0x004
+#define AM65_CPSW_PN_REG_MAX_BLKS		0x008
 #define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
 #define AM65_CPSW_PN_REG_EST_CTL		0x060
 #define AM65_CPSW_PN_REG_TS_CTL             	0x310
@@ -51,6 +52,10 @@
 /* AM65_CPSW_PN_REG_CTL register fields */
 #define AM65_CPSW_PN_CTL_IET_PORT_EN		BIT(16)
 #define AM65_CPSW_PN_CTL_EST_PORT_EN		BIT(17)
+
+/* AM65_CPSW_PN_REG_MAX_BLKS register vals */
+#define AM65_CPSW_PN_MAX_BLKS_DEF		0x00001004
+#define AM65_CPSW_PN_MAX_BLKS_IET		0x00000D07
 
 /* AM65_CPSW_PN_REG_EST_CTL register fields */
 #define AM65_CPSW_PN_EST_ONEBUF			BIT(0)
@@ -129,15 +134,20 @@ static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 
 static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, int enable)
 {
+	u32 max_blks_val;
 	u32 val;
 
 	val = readl(port->port_base + AM65_CPSW_PN_REG_CTL);
-	if (enable)
+	if (enable) {
 		val |= AM65_CPSW_PN_CTL_IET_PORT_EN;
-	else
+		max_blks_val = AM65_CPSW_PN_MAX_BLKS_IET;
+	} else {
 		val &= ~AM65_CPSW_PN_CTL_IET_PORT_EN;
+		max_blks_val = AM65_CPSW_PN_MAX_BLKS_DEF;
+	}
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
+	writel(max_blks_val, port->port_base + AM65_CPSW_PN_REG_MAX_BLKS);
 	port->iet_enabled = enable;
 }
 
