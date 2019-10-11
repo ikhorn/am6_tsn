@@ -37,6 +37,8 @@
 #define AM65_CPSW_REG_EST_TS_DOMAIN		0x054
 #define AM65_CPSW_PN_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_MAX_BLKS		0x008
+#define AM65_CPSW_PN_REG_IET_CTRL		0x040
+#define AM65_CPSW_PN_REG_IET_VERIFY		0x049
 #define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
 #define AM65_CPSW_PN_REG_EST_CTL		0x060
 #define AM65_CPSW_PN_REG_TS_CTL             	0x310
@@ -68,6 +70,12 @@
 #define AM65_CPSW_PN_EST_FILL_EN		BIT(8)
 #define AM65_CPSW_PN_EST_FILL_MARGIN_OFFSET	16
 #define AM65_CPSW_PN_EST_FILL_MARGIN_MASK	0x3ff
+
+/* AM65_CPSW_PN_REG_IET_CTL register fields */
+#define AM65_CPSW_PN_IET_VERIFY_DBL		BIT(2)
+
+/* AM65_CPSW_PN_REG_IET_VERIFY register fields */
+#define AM65_CPSW_IET_VERIFY_1000		0x001312D0
 
 /* AM65_CPSW_PN_REG_FIFO_STATUS register fields */
 #define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_OFFSET	0
@@ -132,8 +140,30 @@ static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 	port->est_enabled = enable;
 }
 
+static void am65_cpsw_port_iet_verify_enable(struct am65_cpsw_port *port,
+					     int link_speed, int enable)
+{
+	u32 val, iet_ctrl;
+
+	iet_ctrl = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+	if (!enable)
+		iet_ctrl |= AM65_CPSW_PN_IET_VERIFY_DBL;
+	else
+		iet_ctrl &= ~AM65_CPSW_PN_IET_VERIFY_DBL;
+
+	writel(iet_ctrl, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+
+	if (!enable)
+		return;
+
+	val = DIV_ROUND_UP(SPEED_1000, link_speed);
+	val = val * AM65_CPSW_IET_VERIFY_1000;
+	writel(val, port->port_base + AM65_CPSW_PN_REG_IET_VERIFY);
+}
+
 static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, int enable)
 {
+	int link_speed = SPEED_1000; /* const for now */
 	u32 max_blks_val;
 	u32 val;
 
@@ -145,6 +175,9 @@ static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, int enable)
 		val &= ~AM65_CPSW_PN_CTL_IET_PORT_EN;
 		max_blks_val = AM65_CPSW_PN_MAX_BLKS_DEF;
 	}
+
+	/* always enable verify feature, as it's default */
+	am65_cpsw_port_iet_verify_enable(port, link_speed, enable);
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
 	writel(max_blks_val, port->port_base + AM65_CPSW_PN_REG_MAX_BLKS);
