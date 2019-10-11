@@ -173,6 +173,7 @@ struct tc_taprio_qopt_offload {
 	ktime_t base_time;
 	u64 cycle_time;
 	u64 cycle_time_extension;
+	bool frame_preemption;
 
 	size_t num_entries;
 	struct tc_taprio_sched_entry entries[0];

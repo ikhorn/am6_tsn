@@ -1187,6 +1187,7 @@ static void taprio_sched_to_offload(struct taprio_sched *q,
 	offload->base_time = sched->base_time;
 	offload->cycle_time = sched->cycle_time;
 	offload->cycle_time_extension = sched->cycle_time_extension;
+	offload->frame_preemption = sched->frame_preemption;
 
 	list_for_each_entry(entry, &sched->entries, list) {
 		struct tc_taprio_sched_entry *e = &offload->entries[i];
