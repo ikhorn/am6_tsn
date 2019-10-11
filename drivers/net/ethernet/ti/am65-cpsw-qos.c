@@ -41,6 +41,7 @@
 #define AM65_CPSW_PN_REG_TS_CTL             	0x310
 
 /* AM65_CPSW_REG_CTL register fields */
+#define AM65_CPSW_CTL_IET_EN			BIT(17)
 #define AM65_CPSW_CTL_EST_EN			BIT(18)
 
 /* AM65_CPSW_REG_EST_TS_DOMAIN register fields */
@@ -48,6 +49,7 @@
 #define AM65_CPSW_EST_TS_DOMAIN_MASK		0xf
 
 /* AM65_CPSW_PN_REG_CTL register fields */
+#define AM65_CPSW_PN_CTL_IET_PORT_EN		BIT(16)
 #define AM65_CPSW_PN_CTL_EST_PORT_EN		BIT(17)
 
 /* AM65_CPSW_PN_REG_EST_CTL register fields */
@@ -96,6 +98,21 @@ static void am65_cpsw_est_enable(struct am65_cpsw_common *common, int enable)
 	common->est_enabled = enable;
 }
 
+static void am65_cpsw_iet_enable(struct am65_cpsw_common *common, int enable)
+{
+	u32 val;
+
+	val = readl(common->cpsw_base + AM65_CPSW_REG_CTL);
+
+	if (enable)
+		val |= AM65_CPSW_CTL_IET_EN;
+	else
+		val &= ~AM65_CPSW_CTL_IET_EN;
+
+	writel(val, common->cpsw_base + AM65_CPSW_REG_CTL);
+	common->iet_enabled = enable;
+}
+
 static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 {
 	u32 val;
@@ -108,6 +125,20 @@ static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
 	port->est_enabled = enable;
+}
+
+static void am65_cpsw_port_iet_enable(struct am65_cpsw_port *port, int enable)
+{
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_CTL);
+	if (enable)
+		val |= AM65_CPSW_PN_CTL_IET_PORT_EN;
+	else
+		val &= ~AM65_CPSW_PN_CTL_IET_PORT_EN;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
+	port->iet_enabled = enable;
 }
 
 static int am65_cpsw_port_est_alloc_buf(struct net_device *ndev)
@@ -161,6 +192,21 @@ static void am65_cpsw_est_set(struct net_device *ndev, int enable)
 		common_enable &= common->ports[i].est_enabled;
 
 	am65_cpsw_est_enable(common, common_enable);
+}
+
+static void am65_cpsw_iet_set(struct net_device *ndev, int enable)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
+	int common_enable = 0;
+	int i;
+
+	am65_cpsw_port_iet_enable(port, enable);
+
+	for (i = 0; i < common->port_num; i++)
+		common_enable &= common->ports[i].iet_enabled;
+
+	am65_cpsw_iet_enable(common, common_enable);
 }
 
 static u32 am65_cpsw_est_calc_sched(struct net_device *ndev, int interval,
@@ -248,6 +294,7 @@ static int am65_cpsw_set_taprio(struct net_device *ndev, void *type_data)
 	if (ret)
 		return ret;
 
+	am65_cpsw_iet_set(ndev, taprio->frame_preemption);
 	am65_cpsw_port_est_target_buf(ndev, buf_idx);
 	am65_cpsw_est_set(ndev, taprio->enable);
 	return 0;
