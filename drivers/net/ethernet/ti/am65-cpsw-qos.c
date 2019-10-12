@@ -14,12 +14,29 @@
 
 #define AM65_CPSW_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_CTL			0x004
+#define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
+#define AM65_CPSW_PN_REG_EST_CTL		0x060
 
 /* AM65_CPSW_REG_CTL register fields */
 #define AM65_CPSW_CTL_EST_EN			BIT(18)
 
 /* AM65_CPSW_PN_REG_CTL register fields */
 #define AM65_CPSW_PN_CTL_EST_PORT_EN		BIT(17)
+
+/* AM65_CPSW_PN_REG_EST_CTL register fields */
+#define AM65_CPSW_PN_EST_ONEBUF			BIT(0)
+#define AM65_CPSW_PN_EST_BUFSEL			BIT(1)
+#define AM65_CPSW_PN_EST_TS_EN			BIT(2)
+#define AM65_CPSW_PN_EST_TS_FIRST		BIT(3)
+#define AM65_CPSW_PN_EST_ONEPRI			BIT(4)
+#define AM65_CPSW_PN_EST_TS_PRI_MSK		GENMASK(7, 5)
+
+/* AM65_CPSW_PN_REG_FIFO_STATUS register fields */
+#define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_MSK	GENMASK(7, 0)
+#define AM65_CPSW_PN_FST_TX_E_MAC_ALLOW_MSK	GENMASK(15, 8)
+#define AM65_CPSW_PN_FST_EST_CNT_ERR		BIT(16)
+#define AM65_CPSW_PN_FST_EST_ADD_ERR		BIT(17)
+#define AM65_CPSW_PN_FST_EST_BUFACT		BIT(18)
 
 #if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
 
@@ -54,6 +71,75 @@ static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 		val &= ~AM65_CPSW_PN_CTL_EST_PORT_EN;
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_CTL);
+}
+
+/* target new EST RAM buffer, actual toggle happens after cycle completion */
+static void am65_cpsw_port_est_assign_buf_num(struct net_device *ndev,
+					      int buf_num)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+	if (buf_num)
+		val |= AM65_CPSW_PN_EST_BUFSEL;
+	else
+		val &= ~AM65_CPSW_PN_EST_BUFSEL;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+}
+
+static int am65_cpsw_port_est_get_free_buf_num(struct net_device *ndev)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int oper_buf, admin_buf;
+	int try = 2;
+	u32 val;
+
+	while (try--) {
+		/* can't toggle buffer if prev. toggle is not completed */
+		val = readl(port->port_base + AM65_CPSW_PN_REG_FIFO_STATUS);
+		oper_buf = !!(val & AM65_CPSW_PN_FST_EST_BUFACT);
+
+		val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+		admin_buf = !!(val & AM65_CPSW_PN_EST_BUFSEL);
+		if (admin_buf == oper_buf)
+			return !oper_buf;
+
+		/* flush transition as it's not allowed to touch memory
+		 * in-flight
+		 */
+		am65_cpsw_port_est_assign_buf_num(ndev, oper_buf);
+
+		dev_info(&ndev->dev,
+			 "Prev. EST admin cycle is in transit %d -> %d\n",
+			 oper_buf, admin_buf);
+	}
+
+	return admin_buf;
+}
+
+static int am65_cpsw_port_est_get_buf_num(struct net_device *ndev,
+					  struct am65_cpsw_est *est_new)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int buf_num;
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+	if (est_new->one_buf)
+		val |= AM65_CPSW_PN_EST_ONEBUF;
+	else
+		val &= ~AM65_CPSW_PN_EST_ONEBUF;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+
+	if (est_new->one_buf)
+		return 0;
+
+	buf_num = am65_cpsw_port_est_get_free_buf_num(ndev);
+
+	return buf_num;
 }
 
 static void am65_cpsw_est_set(struct net_device *ndev, int enable)
@@ -101,14 +187,23 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpsw_common *common = port->common;
+	int buf_num;
 
 	am65_cpsw_est_update_state(ndev);
 
-	if (est_new->taprio.enable && common->pf_p0_rx_ptype_rrobin) {
+	if (!est_new->taprio.enable) {
+		am65_cpsw_est_set(ndev, est_new->taprio.enable);
+		return 0;
+	}
+
+	if (common->pf_p0_rx_ptype_rrobin) {
 		netdev_err(ndev,
 			   "p0-rx-ptype-rrobin flag conflicts with taprio qdisc\n");
 		return -EINVAL;
 	}
+
+	buf_num = am65_cpsw_port_est_get_buf_num(ndev, est_new);
+	am65_cpsw_port_est_assign_buf_num(ndev, buf_num);
 
 	am65_cpsw_est_set(ndev, est_new->taprio.enable);
 
