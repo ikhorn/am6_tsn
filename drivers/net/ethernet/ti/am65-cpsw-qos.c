@@ -38,6 +38,10 @@
 #define AM65_CPSW_PN_FST_EST_ADD_ERR		BIT(17)
 #define AM65_CPSW_PN_FST_EST_BUFACT		BIT(18)
 
+#define AM65_CPSW_FETCH_RAM_CMD_NUM		0x80
+#define AM65_CPSW_FETCH_CNT_MSK			GENMASK(22, 8)
+#define AM65_CPSW_FETCH_CNT_MAX			(AM65_CPSW_FETCH_CNT_MSK >> 8)
+
 #if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
 
 static int am65_cpsw_port_est_enabled(struct am65_cpsw_port *port)
@@ -89,6 +93,9 @@ static void am65_cpsw_port_est_assign_buf_num(struct net_device *ndev,
 	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
 }
 
+/* This should be called with preemption/interrupt disabled to avoid long
+ * delays while flushing.
+ */
 static int am65_cpsw_port_est_get_free_buf_num(struct net_device *ndev)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
@@ -182,12 +189,96 @@ static void am65_cpsw_est_update_state(struct net_device *ndev)
 	port->qbv.est_admin = NULL;
 }
 
+/* Fetch command count it's number of bytes in Gigabit mode or nibbles in
+ * 10/100Mb mode. So, having speed and time in ns, recalculate ns to number of
+ * bytes/nibbles that can be sent while transmission on given speed.
+ */
+static int am65_est_cmd_ns_to_cnt(u64 ns, int link_speed)
+{
+	u64 temp;
+
+	temp = ns * link_speed;
+	if (link_speed < SPEED_1000)
+		temp <<= 1;
+
+	return DIV_ROUND_UP(temp, 8 * 1000);
+}
+
+static int am65_cpsw_est_calc_cmd_num(struct tc_taprio_qopt_offload *taprio,
+				      int link_speed)
+{
+	int i, cmd_cnt, cmd_sum = 0;
+	u32 fetch_cnt;
+
+	for (i = 0; i < taprio->num_entries; i++) {
+		fetch_cnt = am65_est_cmd_ns_to_cnt(taprio->entries[i].interval,
+						   link_speed);
+
+		if (fetch_cnt > AM65_CPSW_FETCH_CNT_MAX) {
+			cmd_cnt = fetch_cnt / AM65_CPSW_FETCH_CNT_MAX;
+			if (cmd_cnt * AM65_CPSW_FETCH_CNT_MAX < fetch_cnt)
+				cmd_cnt++;
+		} else {
+			cmd_cnt = 1;
+		}
+
+		cmd_sum += cmd_cnt;
+
+		if (!fetch_cnt)
+			break;
+	}
+
+	return cmd_sum;
+}
+
+static int am65_cpsw_est_get_buf_mode(struct net_device *ndev, int link_speed,
+				      struct am65_cpsw_est *est_new)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int cmd_num;
+
+	cmd_num = am65_cpsw_est_calc_cmd_num(&est_new->taprio, link_speed);
+	if (cmd_num > AM65_CPSW_FETCH_RAM_CMD_NUM) {
+		netdev_err(ndev, "No fetch RAM");
+		return -ENOMEM;
+	}
+
+	if (port->qbv.est_oper && port->qbv.est_oper->one_buf) {
+		netdev_err(ndev,
+			   "One buf fetch RAM was used, stop taprio first");
+		return -ENOMEM;
+	}
+
+	if (port->qbv.est_oper &&
+	    cmd_num > AM65_CPSW_FETCH_RAM_CMD_NUM / 2) {
+		netdev_err(ndev,
+			   "Failed to toggle fetch RAM, stop taprio first");
+		return -ENOMEM;
+	}
+
+	/* Use two buffer operation to toggle configuration easily, it's
+	 * supposed to cover mostly all cases. But if requested more memory
+	 * than one buffer can allow and no running EST schedule for the port
+	 * the one_buf mode can be used.
+	 */
+	if (cmd_num > AM65_CPSW_FETCH_RAM_CMD_NUM / 2) {
+		est_new->one_buf = 1;
+		dev_info(&ndev->dev,
+			 "One buffer mode is used, no runtime schedule swap is allowed afterwards");
+	} else {
+		est_new->one_buf = 0;
+	}
+
+	return 0;
+}
+
 static int am65_cpsw_configure_taprio(struct net_device *ndev,
 				      struct am65_cpsw_est *est_new)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpsw_common *common = port->common;
-	int buf_num;
+	struct ethtool_link_ksettings ecmd;
+	int ret, buf_num, link_speed;
 
 	am65_cpsw_est_update_state(ndev);
 
@@ -201,6 +292,19 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 			   "p0-rx-ptype-rrobin flag conflicts with taprio qdisc\n");
 		return -EINVAL;
 	}
+
+	ret = __ethtool_get_link_ksettings(ndev, &ecmd);
+	if (ret < 0)
+		return ret;
+
+	if (ecmd.base.speed && ecmd.base.speed != SPEED_UNKNOWN)
+		link_speed = ecmd.base.speed;
+	else
+		link_speed = SPEED_10;
+
+	ret = am65_cpsw_est_get_buf_mode(ndev, link_speed, est_new);
+	if (ret < 0)
+		return ret;
 
 	buf_num = am65_cpsw_port_est_get_buf_num(ndev, est_new);
 	am65_cpsw_port_est_assign_buf_num(ndev, buf_num);
