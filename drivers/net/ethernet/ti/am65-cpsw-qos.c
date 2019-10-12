@@ -71,6 +71,14 @@
 #define AM65_CPSW_PN_FST_EST_ADD_ERR		BIT(17)
 #define AM65_CPSW_PN_FST_EST_BUFACT		BIT(18)
 
+/* EST FETCH COMMAND RAM */
+#define AM65_CPSW_PORT_RAM_BASE			0x12000
+#define AM65_CPSW_FETCH_CMD_NUM			0x1F
+#define AM65_CPSW_CPSW_PORT_RAM_OFFSET		(AM65_CPSW_FETCH_CMD_NUM * 4)
+#define AM65_CPSW_FETCH_CNT_MASK		0x3fff
+#define AM65_CPSW_FETCH_CNT_SHIFT		8
+#define AM65_CPSW_FETCH_ALLOW_MASK		0xff
+
 #define SPEED_1000				1000
 
 static void am65_cpsw_est_enable(struct am65_cpsw_common *common, int enable)
@@ -155,10 +163,78 @@ static void am65_cpsw_est_set(struct net_device *ndev, int enable)
 	am65_cpsw_est_enable(common, common_enable);
 }
 
+static u32 am65_cpsw_est_calc_sched(struct net_device *ndev, int interval,
+				    int gate_mask, int link_speed)
+{
+	u32 fetch_cnt, prio_mask;
+	u64 temp;
+	u32 sched;
+
+	temp = interval * link_speed * 8;
+	if (link_speed < SPEED_1000)
+		temp <<= 1;
+
+	fetch_cnt = DIV_ROUND_UP(temp, 1000);
+
+	/* fetch count can't be less than 16? */
+	if (fetch_cnt < 16)
+		fetch_cnt = 16;
+
+	if (fetch_cnt > AM65_CPSW_FETCH_CNT_MASK) {
+		fetch_cnt &= AM65_CPSW_FETCH_CNT_MASK;
+		dev_dbg(&ndev->dev, "fetch_cnt is more than 14 bits: %d\n",
+			fetch_cnt);
+	}
+
+	if (gate_mask > AM65_CPSW_FETCH_ALLOW_MASK)
+		dev_dbg(&ndev->dev, "fetch_allow is more than 8 bits: %d\n",
+			fetch_cnt);
+
+	prio_mask = gate_mask & AM65_CPSW_FETCH_ALLOW_MASK;
+	sched = (fetch_cnt << AM65_CPSW_FETCH_CNT_SHIFT) & prio_mask;
+
+	return sched;
+}
+
+static int am65_cpsw_est_set_cycle_scheds(struct net_device *ndev, int buf_idx,
+					  struct tc_taprio_qopt_offload *taprio)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
+	struct tc_taprio_sched_entry *entry;
+	void __iomem *ram_base;
+	int link_speed = 1000; /* const for now */
+	u32 sched;
+	int i;
+
+	if (!taprio->enable)
+		return 0;
+
+	if (taprio->num_entries > AM65_CPSW_FETCH_CMD_NUM)
+		return -EINVAL;
+
+	ram_base = common->cpsw_base + AM65_CPSW_PORT_RAM_BASE +
+		   AM65_CPSW_CPSW_PORT_RAM_OFFSET * (port->port_id - 1) +
+		   buf_idx * AM65_CPSW_FETCH_CMD_NUM / 2;
+
+	for (i = 0; i < taprio->num_entries; i++) {
+		entry = &taprio->entries[i];
+		sched = am65_cpsw_est_calc_sched(ndev, entry->interval,
+						 entry->gate_mask, link_speed);
+
+		writel(sched, ram_base + i * 4);
+		printk(KERN_ERR "----> command = %d", entry->command);
+		printk(KERN_ERR "----> interval = %d", entry->interval);
+		printk(KERN_ERR "----> gate_mask = %d", entry->gate_mask);
+	}
+
+	return 0;
+}
+
 static int am65_cpsw_set_taprio(struct net_device *ndev, void *type_data)
 {
 	struct tc_taprio_qopt_offload *taprio = type_data;
-	int buf_idx;
+	int ret, buf_idx;
 
 	printk(KERN_ERR "--> base time = %lld", taprio->base_time);
 	printk(KERN_ERR "--> cycle_time = %llu", taprio->cycle_time);
@@ -167,6 +243,10 @@ static int am65_cpsw_set_taprio(struct net_device *ndev, void *type_data)
 	buf_idx = am65_cpsw_port_est_alloc_buf(ndev);
 	if (buf_idx < 0)
 		return buf_idx;
+
+	ret = am65_cpsw_est_set_cycle_scheds(ndev, buf_idx, taprio);
+	if (ret)
+		return ret;
 
 	am65_cpsw_port_est_target_buf(ndev, buf_idx);
 	am65_cpsw_est_set(ndev, taprio->enable);
