@@ -36,6 +36,8 @@
 #define AM65_CPSW_REG_CTL			0x004
 #define AM65_CPSW_REG_EST_TS_DOMAIN		0x054
 #define AM65_CPSW_PN_REG_CTL			0x004
+#define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
+#define AM65_CPSW_PN_REG_EST_CTL		0x060
 #define AM65_CPSW_PN_REG_TS_CTL             	0x310
 
 /* AM65_CPSW_REG_CTL register fields */
@@ -48,20 +50,26 @@
 /* AM65_CPSW_PN_REG_CTL register fields */
 #define AM65_CPSW_PN_CTL_EST_PORT_EN		BIT(17)
 
+/* AM65_CPSW_PN_REG_EST_CTL register fields */
+#define AM65_CPSW_PN_EST_ONEBUF			BIT(0)
+#define AM65_CPSW_PN_EST_BUFSEL			BIT(1)
+#define AM65_CPSW_PN_EST_TS_EN			BIT(2)
+#define AM65_CPSW_PN_EST_TS_FIRST		BIT(3)
+#define AM65_CPSW_PN_EST_ONEPRI			BIT(4)
+#define AM65_CPSW_PN_EST_TS_PRI_OFFSET		5
+#define AM65_CPSW_PN_EST_TS_PRI_MASK		0x7
+#define AM65_CPSW_PN_EST_FILL_EN		BIT(8)
+#define AM65_CPSW_PN_EST_FILL_MARGIN_OFFSET	16
+#define AM65_CPSW_PN_EST_FILL_MARGIN_MASK	0x3ff
+
+/* AM65_CPSW_PN_REG_FIFO_STATUS register fields */
 #define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_OFFSET	0
 #define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_MASK	0xf
 #define AM65_CPSW_PN_FST_TX_E_MAC_ALLOW_OFFSET	8
 #define AM65_CPSW_PN_FST_TX_E_MAC_ALLOW_MASK	0xf
 #define AM65_CPSW_PN_FST_EST_CNT_ERR		BIT(16)
 #define AM65_CPSW_PN_FST_EST_ADD_ERR		BIT(17)
-
-/* EST FETCH COMMAND RAM */
-#define AM65_CPSW_PORT_RAM_BASE			0x12000
-#define AM65_CPSW_FETCH_CMD_NUM			0x1F
-#define AM65_CPSW_CPSW_PORT_RAM_OFFSET		(AM65_CPSW_FETCH_CMD_NUM * 4)
-#define AM65_CPSW_FETCH_CNT_MASK		0x3fff
-#define AM65_CPSW_FETCH_CNT_SHIFT		8
-#define AM65_CPSW_FETCH_ALLOW_MASK		0xff
+#define AM65_CPSW_PN_FST_EST_BUFACT		BIT(18)
 
 #define SPEED_1000				1000
 
@@ -94,6 +102,44 @@ static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
 	port->est_enabled = enable;
 }
 
+static int am65_cpsw_port_est_alloc_buf(struct net_device *ndev)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int active_buf, target_buf;
+	u32 val;
+
+	/* can't toggle buffer if prev. toggle is not completed */
+	val = readl(port->port_base + AM65_CPSW_PN_REG_FIFO_STATUS);
+	active_buf = !!(val & AM65_CPSW_PN_FST_EST_BUFACT);
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+	target_buf = val & AM65_CPSW_PN_EST_BUFSEL;
+	if (target_buf != active_buf) {
+		dev_dbg(&ndev->dev, "Prev. buf toggle in transit %d -> %d\n",
+			active_buf, target_buf);
+		return -ENODATA;
+	}
+
+	return !active_buf;
+}
+
+/* target new EST RAM buffer, actual toggle happens after cycle completion */
+static int am65_cpsw_port_est_target_buf(struct net_device *ndev, int idx)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+	if (idx)
+		val |= AM65_CPSW_PN_EST_BUFSEL;
+	else
+		val &= ~AM65_CPSW_PN_EST_BUFSEL;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+
+	return 0;
+}
+
 static void am65_cpsw_est_set(struct net_device *ndev, int enable)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
@@ -112,13 +158,29 @@ static void am65_cpsw_est_set(struct net_device *ndev, int enable)
 static int am65_cpsw_set_taprio(struct net_device *ndev, void *type_data)
 {
 	struct tc_taprio_qopt_offload *taprio = type_data;
+	int buf_idx;
 
 	printk(KERN_ERR "--> base time = %lld", taprio->base_time);
 	printk(KERN_ERR "--> cycle_time = %llu", taprio->cycle_time);
 	printk(KERN_ERR "--> cycletime_ext = %llu", taprio->cycle_time_extension);
 
+	buf_idx = am65_cpsw_port_est_alloc_buf(ndev);
+	if (buf_idx < 0)
+		return buf_idx;
+
+	am65_cpsw_port_est_target_buf(ndev, buf_idx);
 	am65_cpsw_est_set(ndev, taprio->enable);
 	return 0;
+}
+
+static void am65_cpsw_est_ram_init(struct net_device *ndev)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 val;
+
+	/* use two buffer operation to exchange configuration easily */
+	val = AM65_CPSW_PN_EST_ONEBUF;
+	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
 }
 
 int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
@@ -135,5 +197,6 @@ int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 
 int am65_cpsw_qos_init(struct net_device *ndev)
 {
+	am65_cpsw_est_ram_init(ndev);
 	return 0;
 }
