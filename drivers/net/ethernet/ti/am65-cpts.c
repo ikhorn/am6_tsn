@@ -20,6 +20,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/ptp_classify.h>
 #include <linux/ptp_clock_kernel.h>
+#include "am65-cpts.h"
 
 struct am65_genf_regs {
 	u32 comp_lo;	/* Comparison Low Value 0:31 */
@@ -32,6 +33,7 @@ struct am65_genf_regs {
 } __aligned(32) __packed;
 
 #define AM65_CPTS_GENF_MAX_NUM 9
+#define AM65_CPTS_ESTF_MAX_NUM 8
 
 struct am65_cpts_regs {
 	u32 idver;		/* Identification and version */
@@ -59,6 +61,7 @@ struct am65_cpts_regs {
 	u32 ts_nudge;		/* Time Stamp Nudge value */
 	u32 reserv[33];
 	struct am65_genf_regs genf[AM65_CPTS_GENF_MAX_NUM];
+	struct am65_genf_regs estf[AM65_CPTS_ESTF_MAX_NUM];
 };
 
 /* CONTROL_REG */
@@ -534,6 +537,37 @@ static int am65_cpts_extts_enable(struct am65_cpts *cpts, u32 index, int on)
 
 	return 0;
 }
+
+int am65_cpts_estf_enable(struct am65_cpts *cpts,
+			  struct am65_cpts_estf_req *req)
+{
+	u64 cycles;
+	u32 val;
+
+	if (req->on) {
+		cycles = (req->ns_period * cpts->refclk_freq) / NSEC_PER_SEC;
+		if (cycles > U32_MAX)
+			return -EINVAL;
+
+		/* according to TRM should be zeroed */
+		am65_cpts_write32(cpts, 0, estf[req->idx].length);
+
+		val = upper_32_bits(req->ns_start);
+		am65_cpts_write32(cpts, val, estf[req->idx].comp_hi);
+		val = lower_32_bits(req->ns_start);
+		am65_cpts_write32(cpts, val, estf[req->idx].comp_lo);
+		val = lower_32_bits(cycles);
+		am65_cpts_write32(cpts, val, estf[req->idx].length);
+	} else {
+		am65_cpts_write32(cpts, 0, estf[req->idx].length);
+	}
+
+	dev_dbg(cpts->dev, "%s: ESTF:%u %s\n", __func__, req->idx,
+		req->on ? "enabled" : "disabled");
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(am65_cpts_estf_enable);
 
 /**
  * Enable GENf periodic output

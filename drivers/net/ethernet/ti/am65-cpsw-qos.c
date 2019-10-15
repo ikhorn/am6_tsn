@@ -348,8 +348,8 @@ static void am65_cpsw_est_set_sched_list(struct net_device *ndev,
 		fetch_cnt = am65_est_cmd_ns_to_cnt(entry->interval, link_speed);
 		fetch_allow = entry->gate_mask;
 		if (fetch_allow > AM65_CPSW_FETCH_ALLOW_MAX)
-			dev_dbg(&ndev->dev, "fetch_allow > 8 bits: %d\n",
-				fetch_allow);
+			netdev_dbg(ndev, "fetch_allow > 8 bits: %d\n",
+				   fetch_allow);
 
 		ram_addr = am65_cpsw_est_set_sched_cmds(ram_addr, fetch_cnt,
 							fetch_allow);
