@@ -47,6 +47,12 @@
 #define AM65_CPSW_FETCH_ALLOW_MSK		GENMASK(7, 0)
 #define AM65_CPSW_FETCH_ALLOW_MAX		AM65_CPSW_FETCH_ALLOW_MSK
 
+enum timer_act {
+	TACT_PROG,		/* need program timer */
+	TACT_USER_NEEDED,	/* user need stop first */
+	TACT_SKIP_PROG,		/* just buffer can be updated */
+};
+
 #if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
 
 static int am65_cpsw_port_est_enabled(struct am65_cpsw_port *port)
@@ -366,17 +372,94 @@ static void am65_cpsw_est_set_sched_list(struct net_device *ndev,
 		writel(0, ram_addr);
 }
 
+/**
+ * Enable ESTf periodic output, set cycle start time and interval.
+ */
+static int am65_cpsw_timer_set(struct net_device *ndev,
+			       struct am65_cpsw_est *est_new)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
+	struct am65_cpts *cpts = common->cpts;
+	struct am65_cpts_estf_req req;
+
+	req.ns_period = est_new->taprio.cycle_time;
+	req.idx = port->port_id - 1;
+	req.ns_start = est_new->taprio.base_time;
+	req.on = est_new->taprio.enable;
+
+	return am65_cpts_estf_enable(cpts, &req);
+}
+
+static void am65_cpsw_timer_stop(struct net_device *ndev)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpts *cpts = port->common->cpts;
+	struct am65_cpts_estf_req req;
+
+	req.idx = port->port_id - 1;
+	req.on = 0;
+
+	am65_cpts_estf_enable(cpts, &req);
+}
+
+static enum timer_act am65_cpsw_timer_act(struct net_device *ndev,
+					  struct am65_cpsw_est *est_new)
+{
+	struct tc_taprio_qopt_offload *taprio_oper, *taprio_new;
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpts *cpts = port->common->cpts;
+	u64 cur_time;
+	s64 diff;
+
+	if (!port->qbv.est_oper)
+		return TACT_PROG;
+
+	taprio_new = &est_new->taprio;
+	taprio_oper = &port->qbv.est_oper->taprio;
+
+	if (taprio_new->cycle_time != taprio_oper->cycle_time)
+		return TACT_USER_NEEDED;
+
+	/* in order to avoid timer reset get base_time form oper taprio */
+	if (!taprio_new->base_time && taprio_oper)
+		taprio_new->base_time = taprio_oper->base_time;
+
+	if (taprio_new->base_time == taprio_oper->base_time)
+		return TACT_SKIP_PROG;
+
+	/* base times are cycle synchronized */
+	diff = taprio_new->base_time - taprio_oper->base_time;
+	diff = diff < 0 ? -diff : diff;
+	if (diff % taprio_new->cycle_time)
+		return TACT_USER_NEEDED;
+
+	cur_time = am65_cpts_ns_gettime(cpts);
+	if (taprio_new->base_time <= cur_time + taprio_new->cycle_time)
+		return TACT_SKIP_PROG;
+
+	/* Here hrtimer should be requested to prog admin conf within last
+	 * cycle of oper conf if hypothetical time allows ofc, say
+	 * taprio_new->base_time - cur_time > 40 ms and 2 buffer mode
+	 * is allowed. For this, new enum value can be returned here, kind of
+	 * TACT_HRTIMER_NEEDED, as for now involve a user to stop.
+	 */
+	return TACT_USER_NEEDED;
+}
+
 static int am65_cpsw_configure_taprio(struct net_device *ndev,
 				      struct am65_cpsw_est *est_new)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpsw_common *common = port->common;
+	struct am65_cpts *cpts = common->cpts;
+	int ret, tact = TACT_PROG, link_speed;
 	struct ethtool_link_ksettings ecmd;
-	int ret, link_speed;
 
 	am65_cpsw_est_update_state(ndev);
 
 	if (!est_new->taprio.enable) {
+		am65_cpsw_timer_stop(ndev);
 		am65_cpsw_est_set(ndev, est_new->taprio.enable);
 		return 0;
 	}
@@ -400,12 +483,32 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 	if (ret < 0)
 		return ret;
 
+	tact = am65_cpsw_timer_act(ndev, est_new);
+	if (tact == TACT_USER_NEEDED) {
+		netdev_err(ndev, "Can't toggle estf timer, stop taprio first");
+		return -EINVAL;
+	}
+
+	if (tact == TACT_PROG)
+		am65_cpsw_timer_stop(ndev);
+
+	if (!est_new->taprio.base_time)
+		est_new->taprio.base_time = am65_cpts_ns_gettime(cpts);
+
 	am65_cpsw_port_est_get_buf_num(ndev, est_new);
 	am65_cpsw_catch_buf_swap(ndev, est_new);
 	am65_cpsw_est_set_sched_list(ndev, link_speed, est_new);
 	am65_cpsw_port_est_assign_buf_num(ndev, est_new->buf);
 
 	am65_cpsw_est_set(ndev, est_new->taprio.enable);
+
+	if (tact == TACT_PROG) {
+		ret = am65_cpsw_timer_set(ndev, est_new);
+		if (ret) {
+			netdev_err(ndev, "Failed to set cycle time");
+			return ret;
+		}
+	}
 
 	return 0;
 }
