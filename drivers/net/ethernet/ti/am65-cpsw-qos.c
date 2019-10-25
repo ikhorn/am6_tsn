@@ -40,6 +40,7 @@ static void am65_cpsw_est_enable(struct am65_cpsw_common *common, int enable)
 		val &= ~AM65_CPSW_CTL_EST_EN;
 
 	writel(val, common->cpsw_base + AM65_CPSW_REG_CTL);
+	common->est_enabled = enable;
 }
 
 static void am65_cpsw_port_est_enable(struct am65_cpsw_port *port, int enable)
@@ -98,7 +99,16 @@ static void am65_cpsw_est_update_state(struct net_device *ndev)
 static int am65_cpsw_configure_taprio(struct net_device *ndev,
 				      struct am65_cpsw_est *est_new)
 {
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
+
 	am65_cpsw_est_update_state(ndev);
+
+	if (est_new->taprio.enable && common->pf_p0_rx_ptype_rrobin) {
+		netdev_err(ndev,
+			   "p0-rx-ptype-rrobin flag conflicts with taprio qdisc\n");
+		return -EINVAL;
+	}
 
 	am65_cpsw_est_set(ndev, est_new->taprio.enable);
 

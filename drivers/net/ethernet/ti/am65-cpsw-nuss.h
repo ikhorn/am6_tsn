@@ -110,6 +110,8 @@ struct am65_cpsw_common {
 
 	bool			pf_p0_rx_ptype_rrobin;
 	u32			cur_txq;
+
+	int			est_enabled;
 };
 
 struct am65_cpsw_ndev_stats {
