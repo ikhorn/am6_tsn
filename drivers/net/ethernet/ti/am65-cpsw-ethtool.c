@@ -756,7 +756,8 @@ static int am65_cpsw_set_ethtool_priv_flags(struct net_device *ndev, u32 flags)
 
 	rrobin = !!(flags & AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN);
 
-	if ((common->est_enabled || common->iet_enabled) && rrobin) {
+	if ((common->est_enabled || common->iet_enabled || common->mqprio_hw) &&
+	    rrobin) {
 		netdev_err(ndev,
 			   "p0-rx-ptype-rrobin flag conflicts with QOS\n");
 		return -EINVAL;

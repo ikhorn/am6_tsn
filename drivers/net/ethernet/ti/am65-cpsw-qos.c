@@ -5,6 +5,7 @@
  * quality of service module includes:
  * Enhanced Scheduler Traffic (EST - P802.1Qbv/D2.2)
  * Intersperced Express Traffic (IET – P802.3br/D2.0)
+ * MQPRIO Qdisc offload
  */
 
 #include "am65-cpsw-qos.h"
@@ -12,10 +13,12 @@
 #include "am65-cpts.h"
 #include <linux/pm_runtime.h>
 #include <linux/time.h>
+#include <net/pkt_cls.h>
 
 #define AM65_CPSW_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_MAX_BLKS		0x008
+#define AM65_CPSW_PN_REG_TX_PRI_MAP		0x018
 #define AM65_CPSW_PN_REG_IET_CTRL		0x040
 #define AM65_CPSW_PN_REG_IET_STATUS		0x044
 #define AM65_CPSW_PN_REG_IET_VERIFY		0x049
@@ -83,6 +86,8 @@
 #define AM65_CPSW_TX_GAP_XGMII_MSK		GENMASK(15, 0)
 #define AM65_CPSW_TX_GAP_SHORT			12
 
+#define AM65_CPSW_TC_NUM			8
+
 enum pf_act {
 	PF_ENABLE,
 	PF_DISABLE,
@@ -98,6 +103,69 @@ enum timer_act {
 static int am65_cpsw_port_est_enabled(struct am65_cpsw_port *port)
 {
 	return port->qos.est_oper || port->qos.est_admin;
+}
+
+/* MQPRIO */
+
+int am65_cpsw_set_mqprio(struct net_device *ndev, void *type_data)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct tc_mqprio_qopt_offload *mqprio = type_data;
+	struct am65_cpsw_common *common = port->common;
+	int ret, num_tc, tc, count, offset;
+	int common_enable = 0;
+	int i, pri_map = 0;
+
+	num_tc = mqprio->qopt.num_tc;
+	if (num_tc > AM65_CPSW_TC_NUM)
+		return -EINVAL;
+
+	if (mqprio->mode != TC_MQPRIO_MODE_DCB)
+		return -EINVAL;
+
+	if (common->pf_p0_rx_ptype_rrobin) {
+		dev_err(&ndev->dev,
+			"p0-rx-ptype-rrobin flag conflicts with mqprio qdisc\n");
+		return -EINVAL;
+	}
+
+	ret = pm_runtime_get_sync(common->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(common->dev);
+		return ret;
+	}
+
+	if (num_tc) {
+		for (i = 0; i < 8; i++) {
+			tc = mqprio->qopt.prio_tc_map[i];
+			pri_map |= tc << (4 * i);
+		}
+
+		netdev_set_num_tc(ndev, num_tc);
+		for (i = 0; i < num_tc; i++) {
+			count = mqprio->qopt.count[i];
+			offset = mqprio->qopt.offset[i];
+			netdev_set_tc_queue(ndev, i, count, offset);
+		}
+	}
+
+	if (!mqprio->qopt.hw) {
+		/* restore default configuration */
+		netdev_reset_tc(ndev);
+		pri_map = 0x76543210;
+	}
+
+	port->qos.mqprio_hw = mqprio->qopt.hw;
+
+	for (i = 0; i < common->port_num; i++)
+		common_enable |= common->ports[i].qos.mqprio_hw;
+
+	common->mqprio_hw = common_enable;
+
+	writel(pri_map, port->port_base + AM65_CPSW_PN_REG_TX_PRI_MAP);
+
+	pm_runtime_put(common->dev);
+	return ret;
 }
 
 /* IET */
@@ -1110,6 +1178,8 @@ int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 	switch (type) {
 	case TC_SETUP_QDISC_TAPRIO:
 		return am65_cpsw_setup_taprio(ndev, type_data);
+	case TC_SETUP_QDISC_MQPRIO:
+		return am65_cpsw_set_mqprio(ndev, type_data);
 	default:
 		return -EOPNOTSUPP;
 	}

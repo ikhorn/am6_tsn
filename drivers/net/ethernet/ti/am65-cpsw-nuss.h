@@ -114,6 +114,7 @@ struct am65_cpsw_common {
 
 	int			est_enabled;
 	int			iet_enabled;
+	int			mqprio_hw;
 };
 
 struct am65_cpsw_ndev_stats {
