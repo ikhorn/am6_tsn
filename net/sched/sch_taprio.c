@@ -1229,8 +1229,6 @@ static int taprio_enable_offload(struct net_device *dev,
 		goto done;
 	}
 
-	taprio_offload_config_changed(q);
-
 done:
 	taprio_offload_free(offload);
 
@@ -1510,6 +1508,9 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 			call_rcu(&admin->rcu, taprio_free_sched_cb);
 
 		spin_unlock_irqrestore(&q->current_entry_lock, flags);
+
+		if (FULL_OFFLOAD_IS_ENABLED(taprio_flags))
+			taprio_offload_config_changed(q);
 	}
 
 	new_admin = NULL;
