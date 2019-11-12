@@ -429,6 +429,11 @@ int am65_cpsw_set_taprio(struct net_device *ndev, void *type_data)
 	size_t size;
 	int ret;
 
+	if (taprio->cycle_time_extension) {
+		netdev_err(ndev, "Failed to set cycle time extension");
+		return -EOPNOTSUPP;
+	}
+
 	size = sizeof(struct tc_taprio_sched_entry) * taprio->num_entries +
 	       sizeof(struct am65_cpsw_est);
 
