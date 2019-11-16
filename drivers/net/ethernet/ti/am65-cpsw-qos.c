@@ -126,11 +126,10 @@ static int am65_cpsw_port_est_get_free_buf_num(struct net_device *ndev)
 	return admin_buf;
 }
 
-static int am65_cpsw_port_est_get_buf_num(struct net_device *ndev,
-					  struct am65_cpsw_est *est_new)
+static void am65_cpsw_port_est_get_buf_num(struct net_device *ndev,
+					   struct am65_cpsw_est *est_new)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
-	int buf_num;
 	u32 val;
 
 	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
@@ -141,12 +140,8 @@ static int am65_cpsw_port_est_get_buf_num(struct net_device *ndev,
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
 
-	if (est_new->one_buf)
-		return 0;
-
-	buf_num = am65_cpsw_port_est_get_free_buf_num(ndev);
-
-	return buf_num;
+	if (!est_new->one_buf)
+		est_new->buf = am65_cpsw_port_est_get_free_buf_num(ndev);
 }
 
 static void am65_cpsw_est_set(struct net_device *ndev, int enable)
@@ -163,6 +158,17 @@ static void am65_cpsw_est_set(struct net_device *ndev, int enable)
 
 	common_enable |= enable;
 	am65_cpsw_est_enable(common, common_enable);
+}
+
+static void am65_cpsw_admin_to_oper(struct net_device *ndev)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+
+	if (port->qbv.est_oper)
+		devm_kfree(&ndev->dev, port->qbv.est_oper);
+
+	port->qbv.est_oper = port->qbv.est_admin;
+	port->qbv.est_admin = NULL;
 }
 
 /* This update is supposed to be used in any routine before getting real state
@@ -182,11 +188,21 @@ static void am65_cpsw_est_update_state(struct net_device *ndev)
 	if (cur_time < port->qbv.est_admin->taprio.base_time)
 		return;
 
-	if (port->qbv.est_oper)
-		devm_kfree(&ndev->dev, port->qbv.est_oper);
+	am65_cpsw_admin_to_oper(ndev);
+}
 
-	port->qbv.est_oper = port->qbv.est_admin;
-	port->qbv.est_admin = NULL;
+static void am65_cpsw_catch_buf_swap(struct net_device *ndev,
+				     struct am65_cpsw_est *est_new)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+
+	if (port->qbv.est_oper && port->qbv.est_oper->one_buf)
+		return;
+
+	/* rolled buf num == changed buf while configuration */
+	if (port->qbv.est_oper && port->qbv.est_admin &&
+	    est_new->buf == port->qbv.est_oper->buf)
+		am65_cpsw_admin_to_oper(ndev);
 }
 
 /* Fetch command count it's number of bytes in Gigabit mode or nibbles in
@@ -278,7 +294,7 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpsw_common *common = port->common;
 	struct ethtool_link_ksettings ecmd;
-	int ret, buf_num, link_speed;
+	int ret, link_speed;
 
 	am65_cpsw_est_update_state(ndev);
 
@@ -306,8 +322,9 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 	if (ret < 0)
 		return ret;
 
-	buf_num = am65_cpsw_port_est_get_buf_num(ndev, est_new);
-	am65_cpsw_port_est_assign_buf_num(ndev, buf_num);
+	am65_cpsw_port_est_get_buf_num(ndev, est_new);
+	am65_cpsw_catch_buf_swap(ndev, est_new);
+	am65_cpsw_port_est_assign_buf_num(ndev, est_new->buf);
 
 	am65_cpsw_est_set(ndev, est_new->taprio.enable);
 

@@ -11,6 +11,7 @@
 
 struct am65_cpsw_est {
 	int one_buf;
+	int buf;
 	/* has to be the last one */
 	struct tc_taprio_qopt_offload taprio;
 };
