@@ -187,6 +187,23 @@ static int am65_cpsw_iet_verify(struct net_device *ndev, int link_speed)
 	return 0;
 }
 
+static void am65_cpsw_iet_set_mask(struct am65_cpsw_port *port, u32 mask)
+{
+	u32 val;
+
+	val = mask << AM65_CPSW_PN_IET_PREMPT_OFFSET;
+	val &= AM65_CPSW_PN_IET_PREMPT_MASK;
+
+	 /* don't schedule verification */
+	val |= AM65_CPSW_PN_IET_LINK_FAIL;
+
+	/* no mask - no need in IET */
+	if (mask)
+		val |= AM65_CPSW_PN_IET_PENABLE;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+}
+
 int am65_cpsw_iet_set(struct net_device *ndev, int link_speed, u32 mask)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
@@ -224,8 +241,10 @@ int am65_cpsw_iet_set(struct net_device *ndev, int link_speed, u32 mask)
 			goto err;
 	}
 
+	am65_cpsw_iet_set_mask(port, mask);
 	return 0;
 err:
+	am65_cpsw_iet_set_mask(port, 0);
 	am65_cpsw_port_iet_enable(port, link_speed, 0);
 	am65_cpsw_iet_enable(common);
 	return ret;
