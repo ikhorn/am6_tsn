@@ -16,6 +16,7 @@
 #define AM65_CPSW_PN_REG_CTL			0x004
 #define AM65_CPSW_PN_REG_FIFO_STATUS		0x050
 #define AM65_CPSW_PN_REG_EST_CTL		0x060
+#define AM65_CPSW_PN_REG_MAC_TX_GAP		0x3A4
 
 /* AM65_CPSW_REG_CTL register fields */
 #define AM65_CPSW_CTL_EST_EN			BIT(18)
@@ -30,6 +31,9 @@
 #define AM65_CPSW_PN_EST_TS_FIRST		BIT(3)
 #define AM65_CPSW_PN_EST_ONEPRI			BIT(4)
 #define AM65_CPSW_PN_EST_TS_PRI_MSK		GENMASK(7, 5)
+#define AM65_CPSW_PN_EST_FILL_EN		BIT(8)
+#define AM65_CPSW_PN_EST_FILL_MARGIN_MSK	GENMASK(25, 16)
+#define AM65_CPSW_PN_EST_FILL_MARGIN_OFFSET	16
 
 /* AM65_CPSW_PN_REG_FIFO_STATUS register fields */
 #define AM65_CPSW_PN_FST_TX_PRI_ACTIVE_MSK	GENMASK(7, 0)
@@ -46,6 +50,17 @@
 #define AM65_CPSW_FETCH_CNT_OFFSET		8
 #define AM65_CPSW_FETCH_ALLOW_MSK		GENMASK(7, 0)
 #define AM65_CPSW_FETCH_ALLOW_MAX		AM65_CPSW_FETCH_ALLOW_MSK
+
+/* AM65_CPSW_PN_REG_MAC_TX_GAP */
+#define AM65_CPSW_TX_GAP_GMII_MSK		GENMASK(7, 0)
+#define AM65_CPSW_TX_GAP_XGMII_MSK		GENMASK(15, 0)
+#define AM65_CPSW_TX_GAP_SHORT			12
+
+enum pf_act {
+	PF_ENABLE,
+	PF_DISABLE,
+	PF_COLLISION,
+};
 
 enum timer_act {
 	TACT_PROG,		/* need program timer */
@@ -447,6 +462,216 @@ static enum timer_act am65_cpsw_timer_act(struct net_device *ndev,
 	return TACT_USER_NEEDED;
 }
 
+static u32 am65_cpsw_port_ipg_ns(struct net_device *ndev, int link_speed)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 val, ipg;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_MAC_TX_GAP);
+
+	if (link_speed <= SPEED_1000) {
+		val &= AM65_CPSW_TX_GAP_GMII_MSK;
+		/* bytes to ns, for 1Gb, 12B ~ 96 ns */
+		ipg = val * 8 * NSEC_PER_USEC;
+	} else {
+		/* val &= AM65_CPSW_TX_GAP_XGMII_MSK
+		 * But it's rate of short gap, short gap overrides increased
+		 * gap value and ipg is still min default - 12? If so then no
+		 * matter on short gap rate, ipg is still 12B.
+		 */
+		ipg = AM65_CPSW_TX_GAP_SHORT * 8 * NSEC_PER_USEC;
+	}
+
+	return DIV_ROUND_UP(ipg, link_speed);
+}
+
+static u32 am65_cpsw_port_calc_fill(struct net_device *ndev,
+				    struct am65_cpsw_est *est, int link_speed)
+{
+	struct tc_taprio_qopt_offload *taprio;
+	u32 max_pg, fill_margin, ipg;
+	u64 cmds_interval = 0;
+	int i, zero_allow = 0;
+
+	/* if no zero allow and no interval for non timed queues,
+	 * fill margin =  0
+	 */
+	taprio = &est->taprio;
+	for (i = 0; i < taprio->num_entries; i++) {
+		cmds_interval += taprio->entries[i].interval;
+
+		/* skip non zero allow scheds */
+		if (taprio->entries[i].gate_mask)
+			continue;
+
+		zero_allow = 1;
+	}
+
+	if (!zero_allow && taprio->cycle_time == cmds_interval)
+		return 0;
+
+	/* Use maximum packet size, but should be maximum packet size got from
+	 * all non timed queues in above loop, but as at this moment no way to
+	 * configure it, set it to be generic maximum for all queues of given
+	 * interface.
+	 */
+	max_pg = ndev->max_mtu * 8 * NSEC_PER_USEC;
+	max_pg = DIV_ROUND_UP(max_pg, link_speed);
+
+	/* inter packet gap */
+	ipg = am65_cpsw_port_ipg_ns(ndev, link_speed);
+
+	fill_margin = max_pg + ipg;
+
+	return fill_margin;
+}
+
+static void am65_cpsw_port_pf_set(struct net_device *ndev,
+				  struct am65_cpsw_est *est_new, int link_speed)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 margin, margin_cnt, val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+	val &= ~AM65_CPSW_PN_EST_FILL_MARGIN_MSK;
+
+	if (est_new->pf_enable) {
+		margin = am65_cpsw_port_calc_fill(ndev, est_new, link_speed);
+		val |= AM65_CPSW_PN_EST_FILL_EN;
+		/* here has to be another conversion function, use below
+		 * am65_est_cmd_ns_to_cnt() for stub till clarification
+		 * about TBD cloks.
+		 */
+		margin_cnt = am65_est_cmd_ns_to_cnt(margin, link_speed);
+		margin_cnt <<= AM65_CPSW_PN_EST_FILL_MARGIN_OFFSET;
+		val |= (margin_cnt & AM65_CPSW_PN_EST_FILL_MARGIN_MSK);
+	} else {
+		val &= ~AM65_CPSW_PN_EST_FILL_EN;
+	}
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_EST_CTL);
+}
+
+static enum pf_act
+am65_cpsw_port_pf_check(struct net_device *ndev,
+			struct tc_taprio_qopt_offload *taprio,
+			u32 fill_margin, int link_speed)
+{
+	u64 interval, cmds_interval = 0;
+	int i, next, pf_enable = 0;
+	u32 ipg, min_pg;
+	s32 fill_window;
+
+	min_pg = ndev->min_mtu * 8 * NSEC_PER_USEC;
+	min_pg = DIV_ROUND_UP(min_pg, link_speed);
+	ipg = am65_cpsw_port_ipg_ns(ndev, link_speed);
+
+	/* it make sense only if zero allow is used */
+	for (i = 0; i < taprio->num_entries; i++) {
+		cmds_interval += taprio->entries[i].interval;
+
+		/* skip non zero allow scheds */
+		if (taprio->entries[i].gate_mask)
+			continue;
+
+		/* Once frame preemption feature is added and enabled
+		 * here should be check if previous schedule has express and
+		 * preempt queues. It can't have both, thus PF can't be
+		 * enabled?
+		 */
+
+		/* if next is also zero allow, then no harm and fill_window
+		 * is more. Can be included also next + (1..n), but this
+		 * should be enough.
+		 */
+		interval = taprio->entries[i].interval;
+		next = (i == taprio->num_entries - 1) ? 0 : i + 1;
+		if (!taprio->entries[i].gate_mask)
+			interval += taprio->entries[next].interval;
+
+		/* packet can't overlap with next fetch RAM command */
+		fill_window = interval - fill_margin;
+		if (fill_window < 0)
+			return PF_COLLISION;
+
+		if (fill_window < min_pg + ipg) {
+			dev_info(&ndev->dev,
+				 "zero allow [%d] is too short for ESTPF", i);
+			continue;
+		}
+
+		pf_enable = 1;
+	}
+
+	if (pf_enable)
+		return PF_ENABLE;
+
+	/* PF can be enabled for reset of cycle if present */
+	if (taprio->cycle_time - cmds_interval > fill_margin + min_pg + ipg)
+		return PF_ENABLE;
+
+	return PF_DISABLE;
+}
+
+/* It's supposed that Packet Fill (PF) is applied only if zero fetch schedule
+ * is present in cycle configuration, so does oper cycle or doesn't have PF
+ * enabled for fetch zero allow, shouldn't be harm to enable it. In case zero
+ * allow interval is too short and fill margin overlaps for admin cycle or oper
+ * cycle, the PF is disabled because it can corrupt it. Also, disable PF if it's
+ * really no need and enable if configuration allows or leave enabled if oper
+ * cycle needs it and no harm for admin cycle. For oper cycle it's no harm to
+ * disable PF for last cycle as it has impact only on non timed queues.
+ */
+static int am65_cpsw_port_pf_get(struct net_device *ndev,
+				 struct am65_cpsw_est *est_new, int link_speed)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_est *est_oper = port->qbv.est_oper;
+	u32 fill_margin_new, fill_margin_oper;
+	int pf_new, pf_oper;
+
+	/* fill margin can be changed while oper -> admin so should be verified
+	 * for oper cycl later if no collisions before enabling it
+	 */
+	fill_margin_new = am65_cpsw_port_calc_fill(ndev, est_new, link_speed);
+
+	if (est_oper)
+		fill_margin_oper =
+			am65_cpsw_port_calc_fill(ndev, est_oper, link_speed);
+
+	pf_new = am65_cpsw_port_pf_check(ndev, &est_new->taprio,
+					 fill_margin_new, link_speed);
+
+	/* check if no collision with oper cycle */
+	if (est_oper)
+		pf_oper = am65_cpsw_port_pf_check(ndev, &est_oper->taprio,
+						  fill_margin_new, link_speed);
+
+	est_new->pf_enable = (pf_new == PF_ENABLE) &&
+			     (!est_oper || ((pf_oper != PF_COLLISION) &&
+			     (!est_oper->pf_enable ||
+			      fill_margin_new >= fill_margin_oper)));
+
+	if (!est_new->pf_enable && pf_new == PF_ENABLE) {
+		/* here can be started hrtimer to enable PF once admin
+		 * becomes oper, for now just don't enable it and inform
+		 */
+		dev_info(&ndev->dev, "Can't enable ESTPF feature");
+	}
+
+	if (est_oper && est_oper->pf_enable) {
+		/* here can be started hrtimer to disable PF once admin
+		 * becomes oper (only for case pf_new == PF_DISABLE, for
+		 * collision better stop it before), for now just disable it
+		 * and inform.
+		 */
+		if (!est_new->pf_enable)
+			dev_info(&ndev->dev, "Disabling ESTPF feature for admin");
+	}
+
+	return 0;
+}
+
 static int am65_cpsw_configure_taprio(struct net_device *ndev,
 				      struct am65_cpsw_est *est_new)
 {
@@ -497,8 +722,12 @@ static int am65_cpsw_configure_taprio(struct net_device *ndev,
 
 	am65_cpsw_port_est_get_buf_num(ndev, est_new);
 	am65_cpsw_catch_buf_swap(ndev, est_new);
+
+	am65_cpsw_port_pf_get(ndev, est_new, link_speed);
+
 	am65_cpsw_est_set_sched_list(ndev, link_speed, est_new);
 	am65_cpsw_port_est_assign_buf_num(ndev, est_new->buf);
+	am65_cpsw_port_pf_set(ndev, est_new, link_speed);
 
 	am65_cpsw_est_set(ndev, est_new->taprio.enable);
 

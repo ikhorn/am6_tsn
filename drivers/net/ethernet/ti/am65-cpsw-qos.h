@@ -10,6 +10,7 @@
 #include <net/pkt_sched.h>
 
 struct am65_cpsw_est {
+	int pf_enable;
 	int one_buf;
 	int buf;
 	/* has to be the last one */
