@@ -600,6 +600,9 @@ static int am65_cpsw_port_pf_get(struct net_device *ndev,
 	u32 fill_margin_new, fill_margin_oper;
 	int pf_new, pf_oper;
 
+	if (!port->qos.pf_allow)
+		return 0;
+
 	/* fill margin can be changed while oper -> admin so should be verified
 	 * for oper cycl later if no collisions before enabling it
 	 */

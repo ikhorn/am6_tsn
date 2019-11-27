@@ -21,6 +21,7 @@ struct am65_cpsw_qos {
 	struct am65_cpsw_est *est_oper;
 	u64 link_down_time;
 	int link_speed;
+	int pf_allow;
 };
 
 int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,
