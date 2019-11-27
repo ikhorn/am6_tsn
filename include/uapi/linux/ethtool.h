@@ -1722,6 +1722,8 @@ enum ethtool_reset_flags {
 };
 #define ETH_RESET_SHARED_SHIFT	16
 
+/* Disable preemtion. */
+#define PREEMPTION_DISABLE     0x0
 
 /**
  * struct ethtool_link_settings - link control and status
@@ -1837,7 +1839,8 @@ struct ethtool_link_settings {
 	__s8	link_mode_masks_nwords;
 	__u8	transceiver;
 	__u8	reserved1[3];
-	__u32	reserved[7];
+	__u32	preemption;
+	__u32	reserved[6];
 	__u32	link_mode_masks[0];
 	/* layout of link_mode_masks fields:
 	 * __u32 map_supported[link_mode_masks_nwords];
