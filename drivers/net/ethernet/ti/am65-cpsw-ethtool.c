@@ -355,7 +355,9 @@ static const struct am65_cpsw_ethtool_stat am65_slave_stats[] = {
 /* Ethtool priv_flags */
 static const char am65_cpsw_ethtool_priv_flags[][ETH_GSTRING_LEN] = {
 #define	AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN	BIT(0)
+#define	AM65_CPSW_PRIV_EST_PF_ALLOW		BIT(1)
 	"p0-rx-ptype-rrobin",
+	"est-pf-allow",
 };
 
 static int am65_cpsw_ethtool_op_begin(struct net_device *ndev)
@@ -721,18 +723,23 @@ static int am65_cpsw_get_ethtool_ts_info(struct net_device *ndev,
 
 static u32 am65_cpsw_get_ethtool_priv_flags(struct net_device *ndev)
 {
-	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
 	u32 priv_flags = 0;
 
 	if (common->pf_p0_rx_ptype_rrobin)
 		priv_flags |= AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN;
+
+	if (port->qbv.pf_allow)
+		priv_flags |= AM65_CPSW_PRIV_EST_PF_ALLOW;
 
 	return priv_flags;
 }
 
 static int am65_cpsw_set_ethtool_priv_flags(struct net_device *ndev, u32 flags)
 {
-	struct am65_cpsw_common *common = am65_ndev_to_common(ndev);
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	struct am65_cpsw_common *common = port->common;
 	int rrobin;
 
 	rrobin = !!(flags & AM65_CPSW_PRIV_P0_RX_PTYPE_RROBIN);
@@ -745,6 +752,11 @@ static int am65_cpsw_set_ethtool_priv_flags(struct net_device *ndev, u32 flags)
 
 	common->pf_p0_rx_ptype_rrobin = rrobin;
 	am65_cpsw_nuss_set_p0_ptype(common);
+
+	/* It has impact only on new configuration, while oper -> admin
+	 * transitioning, after first start or after down/up.
+	 */
+	port->qbv.pf_allow = !!(flags & AM65_CPSW_PRIV_EST_PF_ALLOW);
 
 	return 0;
 }

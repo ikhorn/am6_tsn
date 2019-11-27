@@ -20,6 +20,7 @@ struct am65_cpsw_est {
 struct am65_cpsw_qbv {
 	struct am65_cpsw_est *est_admin;
 	struct am65_cpsw_est *est_oper;
+	int pf_allow;
 };
 
 #if IS_ENABLED(CONFIG_NET_SCH_TAPRIO)
