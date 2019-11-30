@@ -48,6 +48,7 @@
 
 /* AM65_CPSW_PN_REG_IET_CTRL register fields */
 #define AM65_CPSW_PN_IET_PENABLE		BIT(0)
+#define AM65_CPSW_PN_IET_MACHOLD		BIT(1)
 #define AM65_CPSW_PN_IET_VERIFY_DBL		BIT(2)
 #define AM65_CPSW_PN_IET_LINK_FAIL		BIT(3)
 #define AM65_CPSW_PN_IET_PREMPT_MASK		GENMASK(23, 16)
@@ -100,6 +101,23 @@ static int am65_cpsw_port_est_enabled(struct am65_cpsw_port *port)
 }
 
 /* IET */
+
+void am65_cpsw_iet_set_mac_hold(struct net_device *ndev, int on)
+{
+	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	u32 val;
+
+	val = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+
+	 /* don't schedule verification, for sure */
+	val |= AM65_CPSW_PN_IET_LINK_FAIL;
+	if (on)
+		val |= AM65_CPSW_PN_IET_MACHOLD;
+	else
+		val &= ~AM65_CPSW_PN_IET_MACHOLD;
+
+	writel(val, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+}
 
 static void am65_cpsw_iet_enable(struct am65_cpsw_common *common)
 {

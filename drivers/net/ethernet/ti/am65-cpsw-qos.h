@@ -32,5 +32,6 @@ void am65_cpsw_qos_link_up(struct net_device *ndev, int link_speed);
 void am65_cpsw_qos_link_down(struct net_device *ndev);
 
 int am65_cpsw_iet_set(struct net_device *ndev, int link_speed, u32 mask);
+void am65_cpsw_iet_set_mac_hold(struct net_device *ndev, int on);
 
 #endif /* AM65_CPSW_QOS_H_ */
