@@ -726,8 +726,8 @@ am65_cpsw_port_pf_check(struct net_device *ndev,
 			struct tc_taprio_qopt_offload *taprio, u32 fill_margin)
 {
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
+	int i, prev, next, pf_enable = 0;
 	u64 interval, cmds_interval = 0;
-	int i, next, pf_enable = 0;
 	u32 ipg, min_pg;
 	s32 fill_window;
 
@@ -743,15 +743,24 @@ am65_cpsw_port_pf_check(struct net_device *ndev,
 		if (taprio->entries[i].gate_mask)
 			continue;
 
-		/* Once frame preemption feature is added and enabled
-		 * here should be check if previous schedule has express and
-		 * preempt queues. It can't have both, thus PF can't be
-		 * enabled?
+		/* This can be handled by hw, if so then should be dropped.
+		 * According to the TRM the PF feature is applicable only if
+		 * previous schdule has no both preempt and express priorities
+		 * programmed.
 		 */
+		if (port->qos.iet_mask) {
+			prev = !i ? taprio->num_entries - 1 : i - 1;
+			if ((taprio->entries[prev].gate_mask &
+			     port->qos.iet_mask) &&
+			    (taprio->entries[prev].gate_mask &
+			     ~port->qos.iet_mask))
+				return PF_COLLISION;
+		}
 
 		/* if next is also zero allow, then no harm and fill_window
 		 * is more. Can be included also next + (1..n), but this
-		 * should be enough.
+		 * should be enough. Also potentially can be extended if no
+		 * express queues when frame preemption is enabled.
 		 */
 		interval = taprio->entries[i].interval;
 		next = (i == taprio->num_entries - 1) ? 0 : i + 1;
