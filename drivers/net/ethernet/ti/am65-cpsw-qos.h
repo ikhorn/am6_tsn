@@ -23,6 +23,7 @@ struct am65_cpsw_qos {
 	int link_speed;
 	int pf_allow;
 	int iet_mask;
+	int iet_mac_hold;
 };
 
 int am65_cpsw_qos_ndo_setup_tc(struct net_device *ndev, enum tc_setup_type type,

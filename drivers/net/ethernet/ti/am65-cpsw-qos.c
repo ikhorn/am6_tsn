@@ -117,6 +117,7 @@ void am65_cpsw_iet_set_mac_hold(struct net_device *ndev, int on)
 		val &= ~AM65_CPSW_PN_IET_MACHOLD;
 
 	writel(val, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+	port->qos.iet_mac_hold = on;
 }
 
 static void am65_cpsw_iet_enable(struct am65_cpsw_common *common)
